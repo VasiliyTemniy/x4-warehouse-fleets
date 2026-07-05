@@ -62,9 +62,22 @@
       <param name="waitInDockL" type="bool" default="global.$WarehouseFleets.$waitInDockL" text="Dock idle L-sized ships">
         <patch sinceversion="43" value="global.$WarehouseFleets.$waitInDockL" />
       </param>
+
+      <!-- debugchance - param that fixes hard-to-track InspectedHandler error -->
       <param name="debugchance" type="bool" default="0" advanced="true" text="Debug">
         <input_param name="truevalue" value="100" />
         <patch sinceversion="44" value="0" />
+      </param>
+
+      <!-- idle mining fallback (only relevant for ships with solid/liquid cargo, i.e. miners) -->
+      <param name="miningFallback" type="bool" default="false" text="Mine When Idle">
+        <patch sinceversion="44" value="false" />
+      </param>
+      <param name="miningMaxGateDistance" default="3" type="number" text="Mining: Max Gate Distance">
+        <input_param name="min" value="0" />
+        <input_param name="max" value="10" />
+        <input_param name="step" value="1" />
+        <patch sinceversion="44" value="3" />
       </param>
     </params>
 
