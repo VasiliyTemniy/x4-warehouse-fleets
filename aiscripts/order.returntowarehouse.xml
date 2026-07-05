@@ -1,9 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
-<aiscript name="ReturnToWarehouse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="/home/manuel/Nextcloud/X4 Foundations/2026-02-28/libraries/aiscripts.xsd" version="6">
+<aiscript name="ReturnToWarehouse" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="/home/manuel/Nextcloud/X4 Foundations/2026-02-28/libraries/aiscripts.xsd" version="7">
 
   <order id="ReturnToWarehouse" name="Return to Warehouse" description="Return to Warehouse" category="internal">
     <params>
-      <param name="destination" default="null" advanced="true" type="internal" text="Home Station" />
+      <param name="destination" default="null" type="internal" text="Home Station" />
+      <!-- $debugchance: declared so the sub-call to move.generic can read it from this script's
+           context without raising a Property-lookup-failed. Vanilla move.generic does `chance="$debugchance"`
+           on its own debug_text calls; if undefined in the caller, error. -->
+      <param name="debugchance" default="0" type="internal" text="Debug chance" />
     </params>
     <requires>
       <match shiptype="shiptype.lasertower" negate="true" />
@@ -33,6 +37,7 @@
         <run_script name="'move.generic'">
           <param name="destination" value="$destination" />
           <param name="endintargetzone" value="true" />
+          <param name="debugchance" value="$debugchance" />
         </run_script>
       </do_if>
       <label name="finish" />

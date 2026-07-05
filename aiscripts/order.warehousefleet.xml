@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<aiscript name="WarehouseFleet" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="/home/manuel/Nextcloud/X4 Foundations/2026-02-28/libraries/aiscripts.xsd" version="42">
+<aiscript name="WarehouseFleet" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="/home/manuel/Nextcloud/X4 Foundations/2026-02-28/libraries/aiscripts.xsd" version="44">
 
   <order id="WarehouseFleet" name="WarehouseFleet" description="Warehouse Fleet" category="trade" infinite="true">
     <params>
@@ -20,6 +20,10 @@
       <param name="supplyTargets" type="list" default="[]" text="Supply Targets">
         <input_param name="type" value="'object'" />
         <patch sinceversion="38" value="[]" />
+      </param>
+      <param name="additionalProviders" type="list" default="[]" text="Additional Providers" comment="Secondary provider stations. The ship may pick up push trades from these only when its home warehouse has nothing pushable. Never used as a pull-trade receiver, never as a return-home target. Stations listed here should NOT also appear in Targets or Supply Targets.">
+        <input_param name="type" value="'object'" />
+        <patch sinceversion="43" value="[]" />
       </param>
 
       <param name="minCargoUsage" default="50" type="number" text="Min. Cargo Usage (%)">
@@ -47,6 +51,16 @@
       <param name="tradeGatePenalty" default="20" type="number" text="Trade Gate Penalty (%)">
         <input_param name="min" value="0" />
         <input_param name="max" value="90" />
+      </param>
+      <param name="fs_mining_fallback" default="true" type="bool" text="Mine When Idle" comment="If checked and this ship is a mineral or gas miner (has solid or liquid cargo capacity), then when the WarehouseFleet scheduler can't find any trade for it, dispatch a one-off mining order to fill the home warehouse with its most under-stocked solid or liquid ware." />
+      <param name="fs_mining_max_gate_distance" default="3" type="number" text="Mining Max Gate Distance" comment="Max gate distance (in jump gates from the home warehouse sector) for the idle-fallback mining order. 0 = stay in home sector only. Only consulted when 'Mine When Idle' is enabled.">
+        <input_param name="min" value="0" />
+        <input_param name="max" value="10" />
+        <input_param name="step" value="1" />
+      </param>
+      <param name="debugchance" type="bool" default="0" advanced="true" text="Debug">
+        <input_param name="truevalue" value="100"/>
+        <patch sinceversion="44" value="0" />
       </param>
     </params>
     <requires>

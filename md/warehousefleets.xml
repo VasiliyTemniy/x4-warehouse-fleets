@@ -7,12 +7,11 @@
         <check_value value="true" />
       </conditions>
       <actions>
-        <set_value name="global.$debugchance" exact="0" />
         <signal_cue cue="WarehouseFleets" check="false" />
       </actions>
     </cue>
 
-    <cue name="Config" version="5">
+    <cue name="Config" version="7">
       <conditions>
         <check_any>
           <event_cue_signalled cue="md.Setup.GameStart" />
@@ -29,6 +28,10 @@
         <set_value name="global.$WarehouseFleets.$waitInDockS" exact="true" />
         <set_value name="global.$WarehouseFleets.$waitInDockM" exact="true" />
         <set_value name="global.$WarehouseFleets.$waitInDockL" exact="false" />
+        <!-- Idle-mining fallback: seconds the scheduler must observe "no trade found" before
+             dispatching a mining order on a mining-capable ship. -->
+        <set_value name="global.$WarehouseFleets.$miningFallbackIdleSeconds" exact="3" />
+        <set_value name="global.$WarehouseFleets.$debugchance" exact="0" />
       </actions>
 
       <patch sinceversion="3">
@@ -52,7 +55,6 @@
 
       <patch sinceversion="5">
         <do_if value="@global.$WarehouseFleets == null">
-          <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Fixing WarehouseFleets settings'" output="false" append="true" />
           <set_value name="global.$WarehouseFleets" exact="table[]" />
           <set_value name="global.$WarehouseFleets.$accountThreshold" exact="1" />
           <set_value name="global.$WarehouseFleets.$transferToPlayer" exact="true" />
@@ -62,6 +64,28 @@
           <set_value name="global.$WarehouseFleets.$waitInDockL" exact="false" />
         </do_if>
       </patch>
+
+      <patch sinceversion="6">
+        <do_if value="not @global.$WarehouseFleets.$miningFallbackIdleSeconds">
+          <set_value name="global.$WarehouseFleets.$miningFallbackIdleSeconds" exact="30" />
+        </do_if>
+      </patch>
+
+      <patch sinceversion="7">
+        <do_if value="@global.$WarehouseFleets.$debugchance == null">
+          <set_value name="global.$WarehouseFleets.$debugchance" exact="0" />
+        </do_if>
+      </patch>
+    </cue>
+
+    <cue name="Load_Lua_Files" instantiate="true">
+      <conditions>
+        <event_ui_triggered screen="'Lua_Loader'" control="'Ready'" />
+      </conditions>
+      <actions>
+        <raise_lua_event name="'Lua_Loader.Load'" param="'extensions.warehousefleets.ui.warehousefleet_map_uix'" />
+        <cancel_cue cue="this" />
+      </actions>
     </cue>
 
     <!-- Main Cue -->
@@ -74,9 +98,16 @@
         <check_value value="true" />
       </conditions>
       <actions>
-        <set_value name="$version" exact="15" />
-        <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Initialize Warehouse Fleets Mod, Version = ' + $version" output="false" append="true" />
+        <set_value name="$version" exact="16" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Initialize Warehouse Fleets Mod, Version = ' + $version" output="false" append="true" />
         <set_value name="$deliveries" exact="[]" />
+        <!-- Mining-fallback bookkeeping. $miningOps holds in-flight mining dispatches so the scheduler
+             can reserve warehouse space against ships that are out mining right now. $idleSince is a
+             per-ship clock tracking how long the scheduler has seen "no trade found" so we don't
+             dispatch mining the instant a trade window briefly closes. Both are global tables keyed
+             by ship component. Cleaned up by the GarbageCollector cue. -->
+        <set_value name="$miningOps" exact="[]" />
+        <set_value name="$idleSince" exact="table[]" />
         <signal_cue cue="ShipInitializer" check="false" comment="check=false, da es den Cue erst nach den actions gibt" />
       </actions>
       <cues>
@@ -84,10 +115,10 @@
         <!-- Prüft auf Versions-Updates und resettet ggf. den Main Cue -->
         <cue name="ModVersionWatcher" instantiate="true" checkinterval="1">
           <conditions>
-            <check_value value="parent.$version == null or parent.$version lt 15" />
+            <check_value value="parent.$version == null or parent.$version lt 16" />
           </conditions>
           <actions>
-            <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Resetting WarehouseFleets Mod (outdated version detected: '+parent.$version+')'" output="false" append="true" />
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Resetting WarehouseFleets Mod (outdated version detected: '+parent.$version+')'" output="false" append="true" />
             <reset_cue cue="WarehouseFleets" />
           </actions>
         </cue>
@@ -99,7 +130,7 @@
           </conditions>
           <actions>
             <find_ship_by_true_owner faction="faction.player" space="player.galaxy" name="$myShips" multiple="true" />
-            <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Found ships: ' + $myShips.count" output="false" append="true" />
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Found ships: ' + $myShips.count" output="false" append="true" />
             <do_for_each in="$myShips" name="$ship">
               <signal_objects object="player.entity" param="'WarehouseFleets'" param2="'RegisterShip'" param3="$ship" />
             </do_for_each>
@@ -114,10 +145,14 @@
           <actions>
             <set_value name="$ship" exact="event.param3" />
             <set_value name="$deliveries" exact="parent.$deliveries" />
-            <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Schedule request received for ship ' + $ship.idcode" output="false" append="true" />
+            <set_value name="$miningOps" exact="parent.$miningOps" />
+            <set_value name="$idleSince" exact="parent.$idleSince" />
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Schedule request received for ship ' + $ship.idcode" output="false" append="true" />
             <run_actions ref="WarehouseFleetScheduler">
               <param name="ship" value="$ship" />
               <param name="deliveries" value="$deliveries" />
+              <param name="miningOps" value="$miningOps" />
+              <param name="idleSince" value="$idleSince" />
             </run_actions>
           </actions>
         </cue>
@@ -133,7 +168,7 @@
           <actions>
             <set_value name="$ship" exact="if event.name == 'event_player_built_ship' then event.param else event.param3" />
             <set_value name="$deliveries" exact="parent.$deliveries" />
-            <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Registered ship: ' + $ship.idcode" output="false" append="true" />
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Registered ship: ' + $ship.idcode" output="false" append="true" />
           </actions>
           <cues>
             <cue name="ShipSpecificCues">
@@ -144,7 +179,10 @@
                     <check_value value="not $ship.exists" />
                   </conditions>
                   <actions>
-                    <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Ship ' + $ship.idcode + ' destroyed, cancelling cues'" output="false" append="true" />
+                    <!-- @$ship.idcode: ship component is invalid at this point so the property lookup
+                         must be guarded. Without the @ prefix this raises a Property-lookup-failed
+                         error every time a tracked ship is destroyed. -->
+                    <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Ship ' + @$ship.idcode + ' destroyed, cancelling cues'" output="false" append="true" />
                     <cancel_cue cue="ShipSpecificCues" />
                   </actions>
                 </cue>
@@ -162,17 +200,23 @@
                     <check_value value="$ship.orders.{1}.$tradedeal.owner.idcode == event.param.owner.idcode" />
                   </conditions>
                   <actions>
-                    <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Ship ' + $ship.idcode + ' executing last trade, scheduling follow-up trip'" output="false" append="true" />
+                    <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Ship ' + $ship.idcode + ' executing last trade, scheduling follow-up trip'" output="false" append="true" />
                     <run_actions ref="WarehouseFleetScheduler">
                       <param name="ship" value="$ship" />
                       <param name="deliveries" value="$deliveries" />
+                      <param name="miningOps" value="parent.parent.parent.$miningOps" />
+                      <param name="idleSince" value="parent.parent.parent.$idleSince" />
                     </run_actions>
                   </actions>
                 </cue>
 
                 <cue name="ReorderTargetsOnSave" instantiate="true">
                   <conditions>
-                    <event_object_order_ready object="$ship" />
+                    <!-- check="false" tells the engine not to raise an error if $ship is gone by
+                         the time the event fires (e.g. ship destroyed). Without this, the cue
+                         throws "Component 0x0 does not exist any more" on ship death. -->
+                    <event_object_order_ready object="$ship" check="false" />
+                    <check_value value="@$ship.exists" />
                     <check_value value="@event.param.id == 'WarehouseFleet'" />
                   </conditions>
                   <actions>
@@ -206,7 +250,7 @@
                     <event_object_order_finished object="$ship" order="$order" />
                   </conditions>
                   <actions>
-                    <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Setting finish time for ship ' + $ship.idcode" output="false" append="true" />
+                    <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Setting finish time for ship ' + $ship.idcode" output="false" append="true" />
                     <set_value name="$delivery.$timeFinished" exact="player.age" />
                     <cancel_cue cue="OrderStateWatcherInstance" />
                   </actions>
@@ -217,7 +261,7 @@
                   </conditions>
                   <actions>
                     <remove_from_list name="$deliveries" exact="$delivery" />
-                    <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Removed delivery (order cancelled): ' + $delivery" output="false" append="true" />
+                    <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Removed delivery (order cancelled): ' + $delivery" output="false" append="true" />
                     <cancel_cue cue="OrderStateWatcherInstance" />
                   </actions>
                 </cue>
@@ -235,9 +279,42 @@
                 <remove_from_list name="$deliveries" exact="$delivery" />
               </do_if>
             </do_for_each>
-            <debug_to_file chance="global.$debugchance" name="'garbage-collector'" directory="'WarehouseFleets'" text="$deliveries.count + ' Deliveries:'" output="false" append="false" />
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'garbage-collector'" directory="'WarehouseFleets'" text="$deliveries.count + ' Deliveries:'" output="false" append="false" />
             <do_for_each in="$deliveries" name="$delivery">
-              <debug_to_file chance="global.$debugchance" name="'garbage-collector'" directory="'WarehouseFleets'" text="$delivery" output="false" append="true" />
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'garbage-collector'" directory="'WarehouseFleets'" text="$delivery" output="false" append="true" />
+            </do_for_each>
+
+            <!-- Mining-fallback bookkeeping cleanup.
+                 - Drop $miningOps entries older than 35min (mining-order duration cap is 30min, so 35
+                   is a safe buffer). Normal cleanup happens in DeliverMinedCargoOrFallback when the
+                   cargo arrives; this is the safety net for ships that died mid-mining or had their
+                   default behaviour cancelled.
+                 - Drop $idleSince entries for ships that no longer exist. -->
+            <set_value name="$miningOps" exact="parent.$miningOps" />
+            <set_value name="$opsToRemove" exact="[]" />
+            <do_for_each in="$miningOps" name="$op">
+              <do_if value="$op.$startedAt lt (player.age - 2100)" comment="2100s = 35min">
+                <append_to_list name="$opsToRemove" exact="$op" />
+              </do_if>
+            </do_for_each>
+            <do_for_each in="$opsToRemove" name="$op">
+              <remove_from_list name="$miningOps" exact="$op" />
+            </do_for_each>
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'garbage-collector'" directory="'WarehouseFleets'" text="$miningOps.count + ' MiningOps:'" output="false" append="true" />
+            <do_for_each in="$miningOps" name="$op">
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'garbage-collector'" directory="'WarehouseFleets'" text="$op" output="false" append="true" />
+            </do_for_each>
+
+            <!-- Idle clock cleanup: drop entries whose ship is gone. -->
+            <set_value name="$idleSince" exact="parent.$idleSince" />
+            <set_value name="$idleKeysToRemove" exact="[]" />
+            <do_for_each in="$idleSince.keys.list" name="$idleShip">
+              <do_if value="not $idleShip.exists">
+                <append_to_list name="$idleKeysToRemove" exact="$idleShip" />
+              </do_if>
+            </do_for_each>
+            <do_for_each in="$idleKeysToRemove" name="$idleShip">
+              <remove_value name="$idleSince.{$idleShip}" />
             </do_for_each>
           </actions>
         </cue>
@@ -251,14 +328,18 @@
       <params>
         <param name="ship" />
         <param name="deliveries" />
+        <param name="miningOps" />
+        <param name="idleSince" />
       </params>
       <actions>
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'==============================='" output="false" append="false" />
+        <!-- append="true" (was "false"): the original mod truncated the per-ship file at every
+             scheduler entry, which made historical decisions unreadable. Keep history. -->
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'==============================='" output="false" append="true" />
 
         <!-- Abbrechen, falls das Default Command geändert wurde -->
         <set_value name="$order" exact="if $ship.defaultorder.id == 'Assist' then $ship.defaultorder.$baseorder else $ship.defaultorder" />
         <do_if value="$order == null or not $order.exists or $order.id != 'WarehouseFleet'">
-          <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Wrong default order found, cancelling scheduler (' + @$order.id + ')'" output="false" append="true" />
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Wrong default order found, cancelling scheduler (' + @$order.id + ')'" output="false" append="true" />
           <return />
         </do_if>
 
@@ -270,14 +351,22 @@
           <transfer_money from="$sourceStation" to="faction.player" amount="$moneyToTransfer" />
         </do_if>
 
-        <!-- Schiff leer machen, falls noch Ladung vorhanden -->
+        <!-- Schiff leer machen, falls noch Ladung vorhanden.
+             Routes through DeliverMinedCargoOrFallback so mined cargo (or any leftover cargo) gets
+             properly delivered: try supply targets first, then home warehouse via trade, only fall
+             back to the user's $failedOrderHandling (refund/teleport/destroy/...) when neither
+             path can accept the wares. -->
         <set_value name="$cargo" exact="$ship.cargo.list" />
         <do_if value="$cargo.count gt 0">
-          <run_actions ref="EmptyCargoRoutine">
+          <run_actions ref="DeliverMinedCargoOrFallback">
             <param name="ship" value="$ship" />
             <param name="cargo" value="$cargo" />
+            <param name="order" value="$order" />
             <param name="warehouse" value="$sourceStation" />
+            <param name="deliveries" value="$deliveries" />
+            <param name="miningOps" value="$miningOps" />
           </run_actions>
+          <return />
         </do_if>
 
         <!-- Target Stations ermitteln (als Targets können auch Sektoren angegeben werden) -->
@@ -310,7 +399,29 @@
             <param name="ship" value="$ship" />
           </run_actions>
         </do_if>
+        <!-- Add all stations that were selected as "supply targets" to common targets list
+             If not added manually to common targets or here - those stations are skipped by this algorithm -->
+        <run_actions ref="AddStations">
+            <param name="stations" value="$targetStations" />
+            <param name="newTargets" value="$order.$supplyTargets" />
+            <param name="ship" value="$ship" />
+        </run_actions>
         <remove_from_list name="$targetStations" exact="$sourceStation" />
+
+        <!-- Build the secondary-providers list (push-only fallback when home has nothing pushable).
+             Strip out sourceStation, anything already in $targetStations (a station can't be both a
+             receiver and a secondary-provider this cycle), and dead components. If empty, the
+             secondary push pass below is a no-op. -->
+        <create_list name="$secondaryProviders" />
+        <do_for_each in="$order.$additionalProviders" name="$ap">
+          <do_if value="@$ap.exists and $ap.idcode != $sourceStation.idcode and $targetStations.indexof.{$ap} == 0 and $secondaryProviders.indexof.{$ap} == 0">
+            <append_to_list name="$secondaryProviders" exact="$ap" />
+          </do_if>
+        </do_for_each>
+        <!-- Defensive: also ensure no secondary provider sneaks into $targetStations as a receiver. -->
+        <do_for_each in="$secondaryProviders" name="$ap">
+          <remove_from_list name="$targetStations" exact="$ap" />
+        </do_for_each>
 
         <!-- Warenliste für Push-Trades erstellen -->
         <find_sell_offer seller="$sourceStation" result="$sellOffers" tradepartner="$ship" multiple="true" usereservations="false" excludeempty="true" />
@@ -324,7 +435,7 @@
           <param name="tradeoffers" value="$buyOffers" />
         </run_actions>
 
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Checking push trades:'" output="false" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Checking push trades:'" output="false" append="true" />
         <run_actions ref="FindPossibleTransports" result="$pushTransports">
           <param name="ship" value="$ship" />
           <param name="order" value="$order" />
@@ -334,7 +445,7 @@
           <param name="deliveries" value="$deliveries" />
         </run_actions>
 
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Checking pull trades:'" output="false" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Checking pull trades:'" output="false" append="true" />
         <run_actions ref="FindPossibleTransports" result="$pullTransports">
           <param name="ship" value="$ship" />
           <param name="order" value="$order" />
@@ -361,12 +472,76 @@
         </run_actions>
 
         <do_if value="$bestPushTrip == null and $bestPullTrip == null">
-          <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'No trade found that meets minimum cargo usage requirement'" output="false" append="true" />
-          <return />
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'No trade found that meets minimum cargo usage requirement'" output="false" append="true" />
+
+          <!-- Secondary push pass: when the home warehouse has nothing pushable AND no pull is
+               available, try the user-configured additional providers as a fallback push source.
+               Same scoring/reservation logic as the primary pass — these stations are treated as
+               external providers by FindPossibleTransports (the "not source" rating branch). -->
+          <do_if value="$secondaryProviders.count gt 0">
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Trying secondary push pass across ' + $secondaryProviders.count + ' additional provider(s)'" output="false" append="true" />
+
+            <!-- Combined sell-offer wares across all secondary providers. -->
+            <create_list name="$secondaryPushWares" />
+            <do_for_each in="$secondaryProviders" name="$secProvider">
+              <find_sell_offer seller="$secProvider" result="$secSellOffers" tradepartner="$ship" multiple="true" usereservations="false" excludeempty="true" />
+              <run_actions ref="GetTradewaresFromOffers" result="$secProviderWares">
+                <param name="tradeoffers" value="$secSellOffers" />
+              </run_actions>
+              <do_for_each in="$secProviderWares" name="$secWare">
+                <do_if value="$secondaryPushWares.indexof.{$secWare} == 0">
+                  <append_to_list name="$secondaryPushWares" exact="$secWare" />
+                </do_if>
+              </do_for_each>
+            </do_for_each>
+
+            <do_if value="$secondaryPushWares.count gt 0">
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Checking secondary push trades:'" output="false" append="true" />
+              <run_actions ref="FindPossibleTransports" result="$secondaryPushTransports">
+                <param name="ship" value="$ship" />
+                <param name="order" value="$order" />
+                <param name="providers" value="$secondaryProviders" />
+                <param name="receivers" value="$targetStations" />
+                <param name="tradewares" value="$secondaryPushWares" />
+                <param name="deliveries" value="$deliveries" />
+              </run_actions>
+
+              <run_actions ref="AssembleTrip" result="$bestPushTrip">
+                <param name="ship" value="$ship" />
+                <param name="order" value="$order" />
+                <param name="possibleTransports" value="$secondaryPushTransports" />
+                <param name="provider" value="null" />
+                <param name="receiver" value="null" />
+              </run_actions>
+
+              <do_if value="$bestPushTrip != null">
+                <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Secondary push trip found: ' + $bestPushTrip" output="false" append="true" />
+              </do_if>
+            </do_if>
+          </do_if>
+
+          <!-- Still nothing — fall through to mining fallback as before. -->
+          <do_if value="$bestPushTrip == null and $bestPullTrip == null">
+            <run_actions ref="TryMiningFallback">
+              <param name="ship" value="$ship" />
+              <param name="order" value="$order" />
+              <param name="sourceStation" value="$sourceStation" />
+              <param name="miningOps" value="$miningOps" />
+              <param name="idleSince" value="$idleSince" />
+            </run_actions>
+
+            <return />
+          </do_if>
         </do_if>
 
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Best Push Trip: ' + $bestPushTrip" output="false" append="true" />
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Best Pull Trip: ' + $bestPullTrip" output="false" append="true" />
+        <!-- A trade WAS found — ship gets real work this cycle. Clear the idle clock so a future
+             "no trade" doesn't immediately count this current idleness against the threshold. -->
+        <do_if value="$idleSince.{$ship}?">
+          <remove_value name="$idleSince.{$ship}" />
+        </do_if>
+
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Best Push Trip: ' + $bestPushTrip" output="false" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Best Pull Trip: ' + $bestPullTrip" output="false" append="true" />
 
         <set_value name="$resultPushTrip" exact="null" />
         <set_value name="$resultPullTrip" exact="null" />
@@ -407,8 +582,8 @@
           <set_value name="$resultPullTrip" exact="$bestPullTrip" />
         </do_elseif>
 
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Push Trip: ' + $resultPushTrip" output="false" append="true" />
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Pull Trip: ' + $resultPullTrip" output="false" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Push Trip: ' + $resultPushTrip" output="false" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Pull Trip: ' + $resultPullTrip" output="false" append="true" />
 
         <do_all exact="2" counter="$idx">
           <set_value name="$trip" exact="if $idx == 1 then $resultPushTrip else $resultPullTrip" />
@@ -453,7 +628,7 @@
             <do_all exact="$trip.$wares.count" counter="$idxWare">
               <set_value name="$ware" exact="$trip.$wares.{$idxWare}" />
               <set_value name="$delivery" exact="$newDeliveries.{$idxWare}" />
-              <debug_to_file chance="global.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Added delivery: ' + $delivery" output="false" append="true" />
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'" text="'Added delivery: ' + $delivery" output="false" append="true" />
               <signal_cue_instantly cue="UpdateDeliveryOnOrderCompletion" param="table[$ship = $ship, $delivery = $delivery, $order = $delivery.$receiverOrder]" />
             </do_all>
 
@@ -464,6 +639,7 @@
         <do_if value="$resultPullTrip == null">
           <create_order object="$ship" id="'ReturnToWarehouse'">
             <param name="destination" value="$sourceStation" />
+            <param name="debugchance" value="global.$WarehouseFleets.$debugchance" />
           </create_order>
         </do_if>
 
@@ -482,7 +658,7 @@
       </params>
       <actions>
 
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  Tradewares: ' + $tradewares" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  Tradewares: ' + $tradewares" append="true" />
 
         <!-- Angebote des Provider-Warehouses ermitteln -->
         <get_ware_definition result="$allwares" flags="tradeware" />
@@ -492,7 +668,7 @@
           <do_if value="$provider.class == class.buildstorage">
             <continue comment="BuildStorages nie als Provider verwenden, die haben sowieso keine SellOffers" />
           </do_if>
-          <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  Provider: ' + $provider.knownname + ' ('+$provider.idcode+')'" append="true" />
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  Provider: ' + $provider.knownname + ' ('+$provider.idcode+')'" append="true" />
           <set_value name="$wares" exact="if $provider.trueowner == faction.player then $allwares else $tradewares" />
           <do_if value="$wares.count gt 0">
             <find_sell_offer seller="$provider" result="$offers" multiple="true" usereservations="true" wares="$wares" tradepartner="$ship">
@@ -501,7 +677,7 @@
               </match_seller>
             </find_sell_offer>
             <do_all exact="$offers.count" counter="$idxOffer">
-              <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'    ' + $offers.{$idxOffer}.ware + ' ('+$offers.{$idxOffer}.amount+'/'+$offers.{$idxOffer}.desiredamount+')'" append="true" />
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'    ' + $offers.{$idxOffer}.ware + ' ('+$offers.{$idxOffer}.amount+'/'+$offers.{$idxOffer}.desiredamount+')'" append="true" />
             </do_all>
             <append_list_elements name="$providerOffers" other="$offers" />
           </do_if>
@@ -511,7 +687,12 @@
         <create_list name="$receiverOffers" />
         <do_all exact="$receivers.count" counter="$idxReceiver">
           <set_value name="$receiver" exact="$receivers.{$idxReceiver}" />
-          <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  Receiver: ' + $receiver.knownname + ' ('+$receiver.idcode+')'" append="true" />
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  Receiver: ' + $receiver.knownname + ' ('+$receiver.idcode+')'" append="true" />
+          <do_if value="$ship.iscapitalship and not $ship.units.{unitcategory.transport}.count and not $receiver.units.{unitcategory.transport}.count">
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+              text="'    skip receiver ' + $receiver.knownname + ' (' + $receiver.idcode + ') - no cargo drones on capital ship or receiver'" append="true" />
+            <continue />
+          </do_if>
           <set_value name="$wares" exact="if $receiver.trueowner == faction.player then $allwares else $tradewares" />
           <do_if value="$wares.count gt 0">
             <find_buy_offer buyer="$receiver" result="$offers" multiple="true" usereservations="true" wares="$wares" tradepartner="$ship" excludeempty="false" comment="excludeempty, da Warehouses ohne Budget sonst nichts ankaufen können">
@@ -520,7 +701,7 @@
               </match_buyer>
             </find_buy_offer>
             <do_all exact="$offers.count" counter="$idxOffer">
-              <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'    ' + $offers.{$idxOffer}.ware + ' ('+$offers.{$idxOffer}.amount+'/'+$offers.{$idxOffer}.desiredamount+')'" append="true" />
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'    ' + $offers.{$idxOffer}.ware + ' ('+$offers.{$idxOffer}.amount+'/'+$offers.{$idxOffer}.desiredamount+')'" append="true" />
             </do_all>
             <append_list_elements name="$receiverOffers" other="$offers" />
           </do_if>
@@ -539,7 +720,7 @@
           </do_if>
         </do_for_each>
 
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  reservations: ' + $reservations" append="true" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  reservations: ' + $reservations" append="true" />
 
         <create_list name="$possibleTransports" />
         <do_for_each in="$providerOffers" name="$providerOffer">
@@ -553,7 +734,7 @@
               </do_if>
 
               <do_if value="$receiver.class == class.buildstorage and not $receiver.base.exists">
-                <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'ZOMBIE: '+$receiver.idcode" />
+                <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'ZOMBIE: '+$receiver.idcode" />
                 <continue />
               </do_if>
 
@@ -590,7 +771,7 @@
                   else $sourceOffer.restriction.factions.indexof.{$targetStation.owner} == 0
                 " comment="not inverted = Whitelist" />
                 <do_if value="not $allowed">
-                  <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Trade ' + $sourceOffer.ware + ' ' + (if $provider.idcode == $order.$sourceStation.idcode then 'to' else 'from') + ' ' + $targetStation.owner + ' not allowed'" />
+                  <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'Trade ' + $sourceOffer.ware + ' ' + (if $provider.idcode == $order.$sourceStation.idcode then 'to' else 'from') + ' ' + $targetStation.owner + ' not allowed'" />
                   <continue comment="Trade durch Restriktionen verboten" />
                 </do_if>
               </do_if>
@@ -663,7 +844,7 @@
               <set_value name="$completesBuildRequest" exact="$transportType == 'supply' and $receiver.class == class.buildstorage and $receiverOffer.desiredamount == $amount" />
               <set_value name="$rating" exact="$importance * if ($completesBuildRequest) then ($shipCapacity) else ($amount * $providerOffer.ware.volume)" />
 
-              <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
                 text="'  '
                   + '[' + $transportType + ' ' + $provider.idcode + ' -> ' + $receiver.idcode + ' ' + $providerOffer.ware + '] '
                   + 'importance = ' + '%.3s'.[$importance]
@@ -685,8 +866,8 @@
                 "
                 output="false" append="true" />
 
-              <do_if value="$amount * $providerOffer.ware.volume lt 0.1 * $shipCapacity">
-                <continue comment="Ware ignorieren, falls wir nicht mindestens 10% des Schiffes damit beladen können" />
+              <do_if value="$amount * $providerOffer.ware.volume lt 0.1 * $shipCapacity and not ($completesBuildRequest and ($ship.isclass.ship_s or $ship.isclass.ship_m))">
+                <continue comment="Ware ignorieren, falls wir nicht mindestens 10% des Schiffes damit beladen können. Ausnahme: build-storage Komplett-Lieferungen fuer S/M-Schiffe (kleine Mengen sind dort akzeptabel, L/XL bleiben fuer volle Ladungen reserviert)." />
               </do_if>
 
               <do_if value="$importance le 0">
@@ -704,7 +885,7 @@
                 $backpressure = $backpressure,
                 $provider = $provider,
                 $receiver = $receiver,
-                $providerID = $receiver.idcode,
+                $providerID = $provider.idcode,
                 $receiverID = $receiver.idcode,
                 $providerOffer = $providerOffer, 
                 $receiverOffer = $receiverOffer,
@@ -715,7 +896,7 @@
         </do_for_each>
 
         <sort_list list="$possibleTransports" sortbyvalue="loop.element.$rating" sortdescending="true" />
-        <debug_to_file chance="global.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  ' + $possibleTransports.count + ' possible transports found'" />
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  ' + $possibleTransports.count + ' possible transports found'" />
         <return value="$possibleTransports" />
 
       </actions>
@@ -782,7 +963,7 @@
             <return value="table[
               $provider = $referenceTransport.$provider,
               $receiver = $referenceTransport.$receiver,
-              $providerID = $referenceTransport.$receiver.idcode,
+              $providerID = $referenceTransport.$provider.idcode,
               $receiverID = $referenceTransport.$receiver.idcode,
               $wares = $transportWares,
               $cargoUsage = $cargoUsage,
@@ -853,6 +1034,387 @@
             <write_to_logbook category="upkeep" entity="$warehouse" object="$ship" interaction="showonmap" title="'WarehouseFleet: Cargo Empty Routine ('+$warehouse.idcode+')'" text="$recoveryText" />
           </do_all>
         </do_elseif>
+      </actions>
+    </library>
+
+    <!-- ============================================================================================
+         Mining-fallback support libraries.
+         Used when the scheduler finds no eligible trade for a mining-capable ship and the per-ship
+         idle timer has expired. Picks an under-stocked solid/liquid ware the home warehouse buys,
+         reserves projected delivery against in-flight mining ops, and (in the caller) dispatches
+         the vanilla MiningRoutine order. After mining completes the WarehouseFleet attention cycle
+         resumes and DeliverMinedCargoOrFallback handles getting the cargo into a useful destination.
+         ============================================================================================ -->
+
+    <library name="TryMiningFallback" purpose="run_actions" namespace="this">
+      <params>
+        <param name="ship" />
+        <param name="order" />
+        <param name="sourceStation" />
+        <param name="miningOps" />
+        <param name="idleSince" />
+      </params>
+      <actions>
+        <!-- Per-fleet opt-out. -->
+        <do_if value="not $order.$fs_mining_fallback">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  MiningFallback: disabled (fs_mining_fallback=false)'" append="true" />
+          <return />
+        </do_if>
+
+        <!-- Ship must be mining-capable: solid or liquid cargo capacity. -->
+        <do_if value="$ship.cargo.capacity.solid le 0 and $ship.cargo.capacity.liquid le 0">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  MiningFallback: ship has no solid/liquid cargo (container-only); skip'" append="true" />
+          <return />
+        </do_if>
+
+        <!-- "Idle" really means idle. If the ship has any active order (e.g. mid-trade, just got
+             dispatched via ScheduleFollowUpTripWhenDocking which pre-plans while still selling),
+             treat it as busy: clear the idle clock and don't dispatch mining. This stops the
+             scheduler from ticking idleSince forward while the ship is in the middle of executing
+             a delivery, which previously caused mining to fire right after a trade completed. -->
+        <do_if value="$ship.orders.count gt 0">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  MiningFallback: ship has ' + $ship.orders.count + ' active order(s); not idle, clearing timer'" append="true" />
+          <do_if value="$idleSince.{$ship}?">
+            <remove_value name="$idleSince.{$ship}" />
+          </do_if>
+          <return />
+        </do_if>
+
+        <!-- Idle clock: start it on first observation, then check against threshold on subsequent calls. -->
+        <do_if value="not $idleSince.{$ship}?">
+          <set_value name="$idleSince.{$ship}" exact="player.age" />
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  MiningFallback: starting idle clock at age=' + player.age" append="true" />
+          <return />
+        </do_if>
+
+        <set_value name="$idleFor" exact="player.age - $idleSince.{$ship}" />
+        <do_if value="$idleFor lt global.$WarehouseFleets.$miningFallbackIdleSeconds">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  MiningFallback: idle for ' + $idleFor + 's, threshold=' + global.$WarehouseFleets.$miningFallbackIdleSeconds + 's; still warming up'" append="true" />
+          <return />
+        </do_if>
+
+        <!-- Pick the most under-stocked mineable ware the warehouse buys (and has room for, after
+             accounting for in-flight reservations). -->
+        <run_actions ref="PickMiningWare" result="$pickedWare">
+          <param name="ship" value="$ship" />
+          <param name="sourceStation" value="$sourceStation" />
+          <param name="miningOps" value="$miningOps" />
+        </run_actions>
+
+        <do_if value="$pickedWare == null">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  MiningFallback: no suitable ware to mine; remaining idle'" append="true" />
+          <return />
+        </do_if>
+
+        <!-- Record the op so concurrent scheduler runs reserve room against this ship's projected arrival. -->
+        <set_value name="$shipMaxUnits" exact="
+          if $pickedWare.waretransport == waretransport.solid then ($ship.cargo.capacity.solid / $pickedWare.volume)i
+          else if $pickedWare.waretransport == waretransport.liquid then ($ship.cargo.capacity.liquid / $pickedWare.volume)i
+          else 0
+        " />
+        <append_to_list name="$miningOps" exact="table[
+          $shipID = $ship.idcode,
+          $warehouseID = $sourceStation.idcode,
+          $wareID = $pickedWare.id,
+          $ware = $pickedWare,
+          $expectedAmount = $shipMaxUnits,
+          $startedAt = player.age,
+        ]" />
+
+        <!-- Reset idle clock — we're giving the ship something to do now. -->
+        <remove_value name="$idleSince.{$ship}" />
+
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+          text="'  MiningFallback: dispatching WarehouseFleetMine for ' + $pickedWare + ' (max ~' + $shipMaxUnits + ' units), anchor=' + $sourceStation.sector.knownname" append="true" />
+        <!-- Scheduler-level summary so the global log lets you scan dispatches across all ships
+             without opening per-ship files. -->
+        <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="'scheduler'" directory="'WarehouseFleets'"
+          text="'MiningFallback dispatch: ship=' + $ship.idcode + ' ware=' + $pickedWare + ' reserved=' + $shipMaxUnits + ' anchor=' + $sourceStation.sector.knownname + ' maxGateDist=' + $order.$fs_mining_max_gate_distance" append="true" />
+
+        <!-- One-shot mining order — our own custom aiscript (order.warehousefleet.mining.xml).
+             It dispatches a single MiningCollect sub-order (the vanilla leaf order that does the
+             actual asteroid-or-gas-cloud mining), waits for it to finish (cargo full or area
+             depleted), and ends. No selling, no looping — that's what the vanilla MiningRoutine
+             wrapper did and what made the ship cycle Dock -> Sell -> Mine forever.
+             After this order ends the ship's default behaviour (WarehouseFleet) resumes, the
+             scheduler runs, sees cargo, and routes it via DeliverMinedCargoOrFallback. -->
+        <create_order id="'WarehouseFleetMine'" object="$ship">
+          <param name="ware" value="$pickedWare" />
+          <param name="anchorSector" value="$sourceStation.sector" />
+          <param name="maxGateDistance" value="$order.$fs_mining_max_gate_distance" />
+          <param name="debugchance" value="global.$WarehouseFleets.$debugchance" />
+        </create_order>
+      </actions>
+    </library>
+
+    <library name="PickMiningWare" purpose="run_actions" namespace="this">
+      <params>
+        <param name="ship" />
+        <param name="sourceStation" />
+        <param name="miningOps" />
+      </params>
+      <actions>
+        <!-- Build candidate ware list based on ship's cargo capacity. Skip nividium per user request. -->
+        <create_list name="$candidates" />
+        <do_if value="$ship.cargo.capacity.solid gt 0">
+          <append_to_list name="$candidates" exact="ware.ore" />
+          <append_to_list name="$candidates" exact="ware.silicon" />
+          <append_to_list name="$candidates" exact="ware.ice" />
+        </do_if>
+        <do_if value="$ship.cargo.capacity.liquid gt 0">
+          <append_to_list name="$candidates" exact="ware.hydrogen" />
+          <append_to_list name="$candidates" exact="ware.methane" />
+          <append_to_list name="$candidates" exact="ware.helium" />
+        </do_if>
+
+        <do_if value="$candidates.count == 0">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  PickMiningWare: ship has no solid/liquid cargo capacity'" append="true" />
+          <return value="null" />
+        </do_if>
+
+        <!-- For each candidate compute: has buy offer at home, current cargo, target capacity,
+             in-flight reservation from miningOps, projected post-arrival fullness. Skip candidates
+             that the warehouse won't have room for. -->
+        <set_value name="$bestWare" exact="null" />
+        <set_value name="$bestRatio" exact="2.0" comment="anything &gt; 1.0 means 'no candidate picked yet'" />
+
+        <do_for_each in="$candidates" name="$ware">
+          <!-- Does home warehouse buy this ware? -->
+          <find_buy_offer buyer="$sourceStation" wares="[$ware]" result="$wareBuyOffers" tradepartner="$ship" multiple="true" usereservations="false" excludeempty="false" />
+          <do_if value="$wareBuyOffers.count == 0">
+            <continue />
+          </do_if>
+
+          <!-- Storage state. -->
+          <set_value name="$wareCargo" exact="$sourceStation.cargo.{$ware}.count" />
+          <set_value name="$wareTarget" exact="$sourceStation.cargo.{$ware}.target" />
+          <do_if value="$wareTarget le 0">
+            <continue comment="warehouse has no storage allocation for this ware" />
+          </do_if>
+
+          <!-- Sum of in-flight reservations (other ships' projected arrivals to this warehouse for this ware). -->
+          <set_value name="$reserved" exact="0" />
+          <do_for_each in="$miningOps" name="$op">
+            <do_if value="$op.$warehouseID == $sourceStation.idcode and $op.$wareID == $ware.id">
+              <set_value name="$reserved" operation="add" exact="$op.$expectedAmount" />
+            </do_if>
+          </do_for_each>
+
+          <!-- This ship's own max contribution if it mined this ware. -->
+          <set_value name="$shipCapacityForWare" exact="
+            if $ware.waretransport == waretransport.solid then $ship.cargo.capacity.solid
+            else if $ware.waretransport == waretransport.liquid then $ship.cargo.capacity.liquid
+            else 0
+          " />
+          <set_value name="$shipMaxUnits" exact="($shipCapacityForWare / $ware.volume)i" />
+
+          <!-- Room exhaustion check. -->
+          <set_value name="$projected" exact="$wareCargo + $reserved + $shipMaxUnits" />
+          <do_if value="$projected ge $wareTarget">
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+              text="'  PickMiningWare: skip ' + $ware + ' (projected=' + $projected + ' &gt;= target=' + $wareTarget + '; reserved=' + $reserved + ')'" append="true" />
+            <continue />
+          </do_if>
+
+          <set_value name="$ratio" exact="($wareCargo)f / $wareTarget" />
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+            text="'  PickMiningWare: candidate ' + $ware + ' ratio=' + '%.2s'.[$ratio] + ' (cargo=' + $wareCargo + '/' + $wareTarget + ' reserved=' + $reserved + ' shipMax=' + $shipMaxUnits + ')'" append="true" />
+
+          <do_if value="$ratio lt $bestRatio">
+            <set_value name="$bestWare" exact="$ware" />
+            <set_value name="$bestRatio" exact="$ratio" />
+          </do_if>
+        </do_for_each>
+
+        <do_if value="$bestWare == null">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  PickMiningWare: no candidate ware passed filters'" append="true" />
+        </do_if>
+        <do_else>
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'" text="'  PickMiningWare: picked ' + $bestWare + ' (ratio=' + '%.2s'.[$bestRatio] + ')'" append="true" />
+        </do_else>
+
+        <return value="$bestWare" />
+      </actions>
+    </library>
+
+    <library name="DeliverMinedCargoOrFallback" purpose="run_actions" namespace="this">
+      <params>
+        <param name="ship" />
+        <param name="cargo" comment="$ship.cargo.list snapshot at scheduler entry" />
+        <param name="order" comment="the WarehouseFleet order; needed for supplyTargets" />
+        <param name="warehouse" comment="$sourceStation" />
+        <param name="deliveries" comment="global delivery reservation table" />
+        <param name="miningOps" comment="global mining-ops table; this lib removes matching entries when cargo is handled" />
+      </params>
+      <actions>
+        <create_list name="$remaining" />
+        <append_list_elements name="$remaining" other="$cargo" />
+        <set_value name="$deliveryScheduled" exact="false" />
+
+        <!-- Step 1: try supply-target delivery for each ware. Build trade orders ship -> supplyTarget. -->
+        <do_for_each in="$cargo" name="$ware">
+          <set_value name="$handled" exact="false" />
+          <set_value name="$amount" exact="$ship.cargo.{$ware}.count" />
+          <do_if value="$amount le 0">
+            <remove_from_list name="$remaining" exact="$ware" />
+            <continue />
+          </do_if>
+
+          <!-- Threshold for the supply-target room check below: depends on $ware only, so hoist it
+               out of the inner per-station loop. Volume (m³) of free room required at a supply
+               target = minCargoUsage% of the ship's same-transport cargo capacity. -->
+          <set_value name="$shipCapForWare" exact="
+            if $ware.waretransport == waretransport.solid      then $ship.cargo.capacity.solid
+            else if $ware.waretransport == waretransport.liquid     then $ship.cargo.capacity.liquid
+            else if $ware.waretransport == waretransport.condensate then $ship.cargo.capacity.condensate
+            else                                                         $ship.cargo.capacity.container" />
+          <set_value name="$minRoomVolume" exact="$shipCapForWare * $order.$minCargoUsage / 100" />
+
+          <do_for_each in="$order.$supplyTargets" name="$supplyStation">
+            <do_if value="not $supplyStation.exists or not $supplyStation.isclass.container or $supplyStation.idcode == $warehouse.idcode">
+              <continue />
+            </do_if>
+            <do_if value="$ship.iscapitalship and not $ship.units.{unitcategory.transport}.count and not $supplyStation.units.{unitcategory.transport}.count">
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+                text="'    DeliverMined: skip supply target ' + $supplyStation.knownname + ' (' + $supplyStation.idcode + ') - no cargo drones on capital ship or target'" append="true" />
+              <continue />
+            </do_if>
+            <find_buy_offer buyer="$supplyStation" wares="[$ware]" result="$stOffers" tradepartner="$ship" multiple="true" usereservations="true" excludeempty="false" />
+            <do_if value="$stOffers.count == 0">
+              <continue />
+            </do_if>
+            <set_value name="$stCargo" exact="$supplyStation.cargo.{$ware}.count" />
+            <set_value name="$stTarget" exact="$supplyStation.cargo.{$ware}.target" />
+            <set_value name="$stRoom" exact="[$stTarget - $stCargo, 0].max" />
+            <do_if value="$stRoom le 0">
+              <continue />
+            </do_if>
+
+            <!-- Skip supply targets that can only absorb a sliver compared to ship capacity.
+                 Threshold $minRoomVolume was computed once in the outer ware-loop. -->
+            <do_if value="($stRoom * $ware.volume) lt $minRoomVolume">
+              <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+                text="'    DeliverMined: skip supply target ' + $supplyStation.idcode + ' for ' + $ware + ' — room ' + $stRoom + ' units (' + ($stRoom * $ware.volume) + ' m³) &lt; minCargoUsage ' + $order.$minCargoUsage + '% of shipCap ' + $shipCapForWare + ' m³'" append="true" />
+              <continue />
+            </do_if>
+
+            <set_value name="$xferAmount" exact="[$amount, $stRoom, $stOffers.{1}.desiredamount].min" />
+            <do_if value="$xferAmount le 0">
+              <continue />
+            </do_if>
+
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+              text="'  DeliverMined: route ' + $xferAmount + ' ' + $ware + ' to supply target ' + $supplyStation.knownname + ' (' + $supplyStation.idcode + ') — reason: supply target has buy offer and room (' + $stRoom + ' free)'" append="true" />
+            <create_trade_order name="$deliveryOrder" object="$ship" tradeoffer="$stOffers.{1}" amount="$xferAmount" />
+            <set_value name="$delivery" exact="table[
+              $shipID = $ship.idcode,
+              $timeScheduled = player.age,
+              $timeFinished = null,
+              $wareID = $ware.id,
+              $amount = $xferAmount,
+              $providerID = $ship.idcode,
+              $receiverID = $supplyStation.idcode,
+              $providerOrder = null,
+              $receiverOrder = $deliveryOrder,
+            ]" />
+            <append_to_list name="$deliveries" exact="$delivery" />
+            <signal_cue_instantly cue="UpdateDeliveryOnOrderCompletion" param="table[$ship = $ship, $delivery = $delivery, $order = $delivery.$receiverOrder]" />
+            <set_value name="$handled" exact="true" />
+            <set_value name="$deliveryScheduled" exact="true" />
+            <break />
+          </do_for_each>
+
+          <do_if value="$handled">
+            <remove_from_list name="$remaining" exact="$ware" />
+          </do_if>
+        </do_for_each>
+
+        <!-- Step 2: for wares still unhandled, try home warehouse via proper trade order. -->
+        <create_list name="$stillRemaining" />
+        <do_for_each in="$remaining" name="$ware">
+          <set_value name="$amount" exact="$ship.cargo.{$ware}.count" />
+          <do_if value="$amount le 0">
+            <continue />
+          </do_if>
+
+          <do_if value="$ship.iscapitalship and not $ship.units.{unitcategory.transport}.count and not $warehouse.units.{unitcategory.transport}.count">
+            <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+              text="'  DeliverMined: skip home warehouse ' + $warehouse.knownname + ' (' + $warehouse.idcode + ') for ' + $ware + ' - no cargo drones on capital ship or warehouse'" append="true" />
+            <append_to_list name="$stillRemaining" exact="$ware" />
+            <continue />
+          </do_if>
+          <find_buy_offer buyer="$warehouse" wares="[$ware]" result="$whOffers" tradepartner="$ship" multiple="true" usereservations="true" excludeempty="false" />
+          <do_if value="$whOffers.count == 0">
+            <append_to_list name="$stillRemaining" exact="$ware" />
+            <continue />
+          </do_if>
+          <set_value name="$whCargo" exact="$warehouse.cargo.{$ware}.count" />
+          <set_value name="$whTarget" exact="$warehouse.cargo.{$ware}.target" />
+          <set_value name="$whRoom" exact="[$whTarget - $whCargo, 0].max" />
+          <do_if value="$whRoom le 0">
+            <append_to_list name="$stillRemaining" exact="$ware" />
+            <continue />
+          </do_if>
+
+          <set_value name="$xferAmount" exact="[$amount, $whRoom, $whOffers.{1}.desiredamount].min" />
+          <do_if value="$xferAmount le 0">
+            <append_to_list name="$stillRemaining" exact="$ware" />
+            <continue />
+          </do_if>
+
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+            text="'  DeliverMined: route ' + $xferAmount + ' ' + $ware + ' to home warehouse ' + $warehouse.knownname + ' (' + $warehouse.idcode + ') — reason: no supply target took it, home has buy offer with ' + $whRoom + ' free'" append="true" />
+          <create_trade_order name="$deliveryOrder" object="$ship" tradeoffer="$whOffers.{1}" amount="$xferAmount" />
+          <set_value name="$delivery" exact="table[
+            $shipID = $ship.idcode,
+            $timeScheduled = player.age,
+            $timeFinished = null,
+            $wareID = $ware.id,
+            $amount = $xferAmount,
+            $providerID = $ship.idcode,
+            $receiverID = $warehouse.idcode,
+            $providerOrder = null,
+            $receiverOrder = $deliveryOrder,
+          ]" />
+          <append_to_list name="$deliveries" exact="$delivery" />
+          <signal_cue_instantly cue="UpdateDeliveryOnOrderCompletion" param="table[$ship = $ship, $delivery = $delivery, $order = $delivery.$receiverOrder]" />
+          <set_value name="$deliveryScheduled" exact="true" />
+        </do_for_each>
+
+        <!-- Step 3: final fallback to the user's configured $failedOrderHandling for any leftover wares. -->
+        <do_if value="$stillRemaining.count gt 0">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+            text="'  DeliverMined: ' + $stillRemaining.count + ' wares unplaced, falling back to EmptyCargoRoutine (mode=' + global.$WarehouseFleets.$failedOrderHandling + ') — reason: no supply target nor home warehouse had a buy offer / room'" append="true" />
+          <run_actions ref="EmptyCargoRoutine">
+            <param name="ship" value="$ship" />
+            <param name="cargo" value="$stillRemaining" />
+            <param name="warehouse" value="$warehouse" />
+          </run_actions>
+        </do_if>
+
+        <!-- After a delivery is queued, send the ship home. The WarehouseFleet outer loop can still
+             preempt this with a real push/pull trade mid-flight; if nothing comes up, the ship lands
+             at the warehouse and the mining fallback (if any) re-fires from the correct anchor
+             instead of starting another mine cycle from wherever the delivery target happened to be. -->
+        <do_if value="$deliveryScheduled and $warehouse.exists">
+          <debug_to_file chance="global.$WarehouseFleets.$debugchance" name="$ship.idcode" directory="'WarehouseFleets'"
+            text="'  DeliverMined: queueing ReturnToWarehouse to ' + $warehouse.knownname + ' (' + $warehouse.idcode + ') after delivery'" append="true" />
+          <create_order id="'ReturnToWarehouse'" object="$ship">
+            <param name="destination" value="$warehouse" />
+            <param name="debugchance" value="global.$WarehouseFleets.$debugchance" />
+          </create_order>
+        </do_if>
+
+        <!-- Clear any miningOps entries belonging to this ship for the now-emptied wares. -->
+        <set_value name="$opsToRemove" exact="[]" />
+        <do_for_each in="$miningOps" name="$op">
+          <do_if value="$op.$shipID == $ship.idcode">
+            <append_to_list name="$opsToRemove" exact="$op" />
+          </do_if>
+        </do_for_each>
+        <do_for_each in="$opsToRemove" name="$op">
+          <remove_from_list name="$miningOps" exact="$op" />
+        </do_for_each>
       </actions>
     </library>
 
