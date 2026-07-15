@@ -40,13 +40,59 @@ local function isAssignedWarehouseFleetDefault(orderidx, order, instance)
     return ok and assignment == "warehousefleet"
 end
 
+local function hasStationCommander(instance)
+    if not mapMenu or not instance or not mapMenu.infoTableData or not mapMenu.infoTableData[instance] then
+        return false
+    end
+
+    local commander = mapMenu.infoTableData[instance].commander
+    if not commander then
+        return false
+    end
+
+    local ok, classid = pcall(GetComponentData, commander, "classid")
+    return ok and classid and Helper.isComponentClass(classid, "station")
+end
+
+local function ensureWarehouseFleetAssignmentOption(ftable)
+    if not ftable or type(ftable.rows) ~= "table" then
+        return
+    end
+
+    for _, row in ipairs(ftable.rows) do
+        if type(row.rowdata) == "table" and row.rowdata[1] == "assignment" then
+            local cell = row[5]
+            local options = cell and cell.properties and cell.properties.options
+            if type(options) ~= "table" then
+                return
+            end
+
+            for _, option in ipairs(options) do
+                if option.id == "warehousefleet" then
+                    return
+                end
+            end
+
+            table.insert(options, {
+                id = "warehousefleet",
+                text = "WarehouseFleet",
+                icon = "",
+                displayremoveoption = false,
+            })
+            return
+        end
+    end
+end
+
 local function changeParamActive(ftable, orderidx, order, paramidx, param, listidx, instance, paramactive)
-    if paramactive then
-        return nil
+    if hasStationCommander(instance) then
+        ensureWarehouseFleetAssignmentOption(ftable)
     end
 
     if isAssignedWarehouseFleetDefault(orderidx, order, instance) then
-        return { paramactive = true }
+        if not paramactive then
+            return { paramactive = true }
+        end
     end
 
     return nil
@@ -88,6 +134,11 @@ local function init()
         return
     end
 
+    local config = type(mapMenu.uix_getConfig) == "function" and mapMenu.uix_getConfig() or nil
+    if config and config.assignments then
+        config.assignments["warehousefleet"] = { name = "WarehouseFleet" }
+    end
+
     mapMenu.registerCallback("displayOrderParam_change_paramactive", changeParamActive, CALLBACK_ID)
     mapMenu.registerCallback("displayDefaultBehaviour_change_param_behaviouractive", changeBehaviourActive, CALLBACK_ID)
     registered = true
@@ -98,4 +149,3 @@ if type(Register_OnLoad_Init) == "function" then
 end
 
 init()
-
